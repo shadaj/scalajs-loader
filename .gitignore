@@ -1,0 +1,5 @@
+.idea/
+project/project
+node_modules/
+package-lock.json
+target/
