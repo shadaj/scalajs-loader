@@ -20,13 +20,13 @@ import scala.util.Try
 @JSExportTopLevel("generator")
 object Main {
   val jarsClassPath = Seq(
-    new NodeVirtualJarScalaJSIRContainer("/Users/shadaj/.ivy2/cache/org.scala-js/scalajs-library_2.12/jars/scalajs-library_2.12-1.0.0-M6.jar")
+    new NodeVirtualJarScalaJSIRContainer(
+        js.Dynamic.global.process.env.HOME.asInstanceOf[String]
+          + "/.ivy2/cache/org.scala-js/scalajs-library_2.12/jars/scalajs-library_2.12-1.0.0-M6.jar"
+      )
   )
 
-  println(jarsClassPath.seq)
-
   val objectClass = jarsClassPath.flatMap(_.sjsirFiles).find(_.tree.name.name == Definitions.ObjectClass).get
-  println(objectClass)
 
   def irToClass(cls: Trees.ClassDef, allowedReferences: Option[Set[String]] = None): LinkedClass = {
     val filteredMembers = cls.memberDefs.collect {
@@ -215,103 +215,90 @@ object Main {
     Set("J", "F", "I", "B", "D", "C", "Z", "S").contains(name)
   }
 
-  val processedSet = mutable.Set[String]()
-
   def generateForIR(tree: Trees.ClassDef): String = {
-    if (!processedSet.contains(tree.name.name)) {
-//      processedSet.add(tree.name.name)
-      val references = findClassReferences(tree) ++ Seq(
-        ClassType("T") -> Some("$f_T__indexOf__T__I"),
-        ClassType("T") -> Some("$f_T__substring__I__I__T"),
-        ClassType("T") -> Some("$f_T__substring__I__T")
+    val references = findClassReferences(tree) ++ Seq(
+      ClassType("T") -> Some("$f_T__indexOf__T__I"),
+      ClassType("T") -> Some("$f_T__substring__I__I__T"),
+      ClassType("T") -> Some("$f_T__substring__I__T")
+    )
+    val referencedLinked = references.map(_._1.className).distinct.filterNot(isSpecial)
+      .toList.flatMap(c => getClassOnPath(c).map(irToClass(_)))
+
+    val emitter = new Emitter(CommonPhaseConfig())
+    val filteredIR = irToClass(tree, Some(referencedLinked.map(_.name.name).toSet))
+    emitter.startRun(
+      new LinkingUnit(
+        CoreSpec.Defaults,
+        filteredIR :: collectInheritedClasses(tree.name.name).tail ::: referencedLinked,
+        List.empty
       )
-      val referencedLinked = references.map(_._1.className).distinct.filterNot(isSpecial)
-        .toList.flatMap(c => getClassOnPath(c).map(irToClass(_)))
+    )
 
-      val emitter = new Emitter(CommonPhaseConfig())
-      val filteredIR = irToClass(tree, Some(referencedLinked.map(_.name.name).toSet))
-      emitter.startRun(
-        new LinkingUnit(
-          CoreSpec.Defaults,
-          filteredIR :: collectInheritedClasses(tree.name.name).tail ::: referencedLinked,
-          List.empty
-        )
+    val result = try {
+      val generatedClass = emitter.genClass(
+        filteredIR,
+        irToClass(objectClass.tree)
       )
 
-      val result = try {
-        val generatedClass = emitter.genClass(
-          filteredIR,
-          irToClass(objectClass.tree)
-        )
+      val out = new WritableMemVirtualBinaryFile
+      val builder = new JSFileBuilder(LinkerOutput(out))
 
-        val out = new WritableMemVirtualBinaryFile
-        val builder = new JSFileBuilder(LinkerOutput(out))
-
-        val toExport = mutable.Queue[String]()
-        def processExports(tree: jsTrees.Tree): Unit = {
-          tree match {
-            case v: jsTrees.VarDef =>
-              toExport.enqueue(v.name.name)
-            case f: jsTrees.FunctionDef =>
-              toExport.enqueue(f.name.name)
-            case b: jsTrees.Block =>
-              b.stats.foreach(processExports)
-            case a =>
-          }
+      val toExport = mutable.Queue[String]()
+      def processExports(tree: jsTrees.Tree): Unit = {
+        tree match {
+          case v: jsTrees.VarDef =>
+            toExport.enqueue(v.name.name)
+          case f: jsTrees.FunctionDef =>
+            toExport.enqueue(f.name.name)
+          case b: jsTrees.Block =>
+            b.stats.foreach(processExports)
+          case a =>
         }
-
-        generatedClass.main.foreach { (b: jsTrees.Tree) =>
-          processExports(b)
-          builder.addJSTree(b)
-        }
-
-        builder.addLine(s"""module.exports = { ${toExport.map(s => s"$s: $s").mkString(",")} };""")
-
-        builder.complete()
-        val mapping = references.distinct.groupBy(_._1).flatMap { case (c, v) =>
-          getClassOnPath(c.className) match {
-            case Some(cls) =>
-              v.flatMap { case (_, usedTerm) =>
-                usedTerm.filter(t => !toExport.contains(t)).map { used =>
-                  used -> s"""require("sjs://${c.className}").$used"""
-                }
-              }
-            case None =>
-              Seq.empty
-              //builder.addLine(s"""// unlinkable class: ${c.className}""")
-          }
-        }.toSeq
-
-        mapping.foldLeft(new String(out.content)) { (cur, swap) =>
-          cur.split('\n').map { l =>
-            if (l.startsWith("function") || l.startsWith("module.exports")) {
-              l
-            } else {
-              l.replaceAllLiterally(swap._1 + "(", "(" + swap._2 + ")(")
-                .replaceAllLiterally(swap._1 + ".", swap._2 + ".")
-                .replaceAllLiterally(swap._1 + " ", swap._2 + " ")
-                .replaceAllLiterally(swap._1 + ";", swap._2 + ";")
-                .replaceAllLiterally(" " + swap._1 + ")", " " + swap._2 + ")")
-            }
-          }.mkString("\n")
-        }
-      } catch {
-        case e: NoSuchElementException =>
-          e.printStackTrace()
-          "// unlinkable references"
       }
 
-      println(s"${tree.name.name} ---------------------------------------------------------------------")
-      result
-    } else {
-      "boo!"
-    }
-  }
+      generatedClass.main.foreach { (b: jsTrees.Tree) =>
+        processExports(b)
+        builder.addJSTree(b)
+      }
 
-  //generateForIR(getClassOnPath("Lme_shadaj_test_Test$").get)
-//  js.Dynamic.global.generate = ((name: String) => {
-//    generateForIR(getClassOnPath("Lme_shadaj_test_Test$").get)
-//  }): js.Function1[String, String]
+      builder.addLine(s"""module.exports = { ${toExport.map(s => s"$s: $s").mkString(",")} };""")
+
+      builder.complete()
+      val mapping = references.distinct.groupBy(_._1).flatMap { case (c, v) =>
+        getClassOnPath(c.className) match {
+          case Some(cls) =>
+            v.flatMap { case (_, usedTerm) =>
+              usedTerm.filter(t => !toExport.contains(t)).map { used =>
+                used -> s"""require("sjs://${c.className}").$used"""
+              }
+            }
+          case None =>
+            Seq.empty
+            //builder.addLine(s"""// unlinkable class: ${c.className}""")
+        }
+      }.toSeq
+
+      mapping.foldLeft(new String(out.content)) { (cur, swap) =>
+        cur.split('\n').map { l =>
+          if (l.startsWith("function") || l.startsWith("module.exports")) {
+            l
+          } else {
+            l.replaceAllLiterally(swap._1 + "(", "(" + swap._2 + ")(")
+              .replaceAllLiterally(swap._1 + ".", swap._2 + ".")
+              .replaceAllLiterally(swap._1 + " ", swap._2 + " ")
+              .replaceAllLiterally(swap._1 + ";", swap._2 + ";")
+              .replaceAllLiterally(" " + swap._1 + ")", " " + swap._2 + ")")
+          }
+        }.mkString("\n")
+      }
+    } catch {
+      case e: NoSuchElementException =>
+        e.printStackTrace()
+        "// unlinkable references"
+    }
+
+    result
+  }
 
   @JSExport("path")
   def path(name: String): js.UndefOr[String] = {
