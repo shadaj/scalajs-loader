@@ -193,7 +193,7 @@ object Main {
     }
   }
 
-  val targetClasses = "../minimal-scalajs/target/scala-2.12/classes"
+  val targetClasses = "./minimal-scalajs/target/scala-2.12/classes"
 
   println("creating map?")
   val classPathMap = jarsClassPath.flatMap(_.sjsirFiles.map(f => f.tree.name.name -> f.tree)).toMap

@@ -348,7 +348,7 @@ final class Emitter private (config: CommonPhaseConfig,
     }
 
     // Static methods
-    for (m <- linkedClass.staticMethods) {
+    for (m <- linkedClass.staticMethods) { // just assume everything is linked
       val methodCache = classCache.getStaticCache(m.value.encodedName)
 
       addToMain(methodCache.getOrElseUpdate(m.version,
@@ -358,12 +358,8 @@ final class Emitter private (config: CommonPhaseConfig,
     // Class definition
     if (linkedClass.hasInstances && kind.isAnyNonNativeClass) {
       val (linkedInlineableInit, linkedMemberMethods0) =
-//        if (linkedClass.name.name == "scg_GenTraversableFactory$GenericCanBuildFrom") {
-//          // yuck hack
-          (classEmitter.extractInlineableInit(linkedClass)(classCache)._1, linkedClass.memberMethods)
-//        } else {
-//          classEmitter.extractInlineableInit(linkedClass)(classCache)
-//        }
+        // yuck hack
+        (classEmitter.extractInlineableInit(linkedClass)(classCache)._1, linkedClass.memberMethods)
 
       // JS constructor
       val ctor = {
